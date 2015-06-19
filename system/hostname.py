@@ -21,13 +21,14 @@
 DOCUMENTATION = '''
 ---
 module: hostname
-author: Hiroaki Nakamura
+author: "Hiroaki Nakamura (@hnakamur)"
 version_added: "1.4"
 short_description: Manage hostname
 requirements: [ hostname ]
 description:
     - Set system's hostname
     - Currently implemented on Debian, Ubuntu, Fedora, RedHat, openSUSE, Linaro, ScientificLinux, Arch, CentOS, AMI.
+    - Any distribution that uses systemd as their init system
 options:
     name:
         required: true
@@ -43,18 +44,6 @@ from distutils.version import LooseVersion
 
 # import module snippets
 from ansible.module_utils.basic import *
-
-
-# wrap get_distribution_version in case it returns a string
-def _get_distribution_version():
-    distribution_version = get_distribution_version()
-
-    if type(distribution_version) is str:
-        distribution_version = 0
-    elif type(distribution_version) is None:
-        distribution_version = 0
-
-    return distribution_version
 
 
 class UnimplementedStrategy(object):
@@ -244,9 +233,9 @@ class RedHatStrategy(GenericStrategy):
 
 # ===========================================
 
-class FedoraStrategy(GenericStrategy):
+class SystemdStrategy(GenericStrategy):
     """
-    This is a Fedora family Hostname manipulation strategy class - it uses
+    This is a Systemd hostname manipulation strategy class - it uses
     the hostnamectl command.
     """
 
@@ -259,6 +248,8 @@ class FedoraStrategy(GenericStrategy):
         return out.strip()
 
     def set_current_hostname(self, name):
+        if len(name) > 64:
+            self.module.fail_json(msg="name cannot be longer than 64 characters on systemd servers, try a shorter name")
         cmd = ['hostnamectl', '--transient', 'set-hostname', name]
         rc, out, err = self.module.run_command(cmd)
         if rc != 0:
@@ -274,6 +265,8 @@ class FedoraStrategy(GenericStrategy):
         return out.strip()
 
     def set_permanent_hostname(self, name):
+        if len(name) > 64:
+            self.module.fail_json(msg="name cannot be longer than 64 characters on systemd servers, try a shorter name")
         cmd = ['hostnamectl', '--pretty', 'set-hostname', name]
         rc, out, err = self.module.run_command(cmd)
         if rc != 0:
@@ -298,28 +291,72 @@ class OpenRCStrategy(GenericStrategy):
 
     def get_permanent_hostname(self):
         try:
-            with open(self.HOSTNAME_FILE, 'r') as f:
+            try:
+                f = open(self.HOSTNAME_FILE, 'r')
                 for line in f:
                     line = line.strip()
                     if line.startswith('hostname='):
                         return line[10:].strip('"')
-            return None
+            except Exception, err:
+                self.module.fail_json(msg="failed to read hostname: %s" % str(err))
+        finally:
+            f.close()
+
+        return None
+
+    def set_permanent_hostname(self, name):
+        try:
+            try:
+                f = open(self.HOSTNAME_FILE, 'r')
+                lines = [x.strip() for x in f]
+
+                for i, line in enumerate(lines):
+                    if line.startswith('hostname='):
+                        lines[i] = 'hostname="%s"' % name
+                        break
+                f.close()
+
+                f = open(self.HOSTNAME_FILE, 'w')
+                f.write('\n'.join(lines) + '\n')
+            except Exception, err:
+                self.module.fail_json(msg="failed to update hostname: %s" % str(err))
+        finally:
+            f.close()
+
+# ===========================================
+
+class OpenBSDStrategy(GenericStrategy):
+    """
+    This is a OpenBSD family Hostname manipulation strategy class - it edits
+    the /etc/myname file.
+    """
+
+    HOSTNAME_FILE = '/etc/myname'
+
+    def get_permanent_hostname(self):
+        if not os.path.isfile(self.HOSTNAME_FILE):
+            try:
+                open(self.HOSTNAME_FILE, "a").write("")
+            except IOError, err:
+                self.module.fail_json(msg="failed to write file: %s" %
+                    str(err))
+        try:
+            f = open(self.HOSTNAME_FILE)
+            try:
+                return f.read().strip()
+            finally:
+                f.close()
         except Exception, err:
             self.module.fail_json(msg="failed to read hostname: %s" %
                 str(err))
 
     def set_permanent_hostname(self, name):
         try:
-            with open(self.HOSTNAME_FILE, 'r') as f:
-                lines = [x.strip() for x in f]
-
-            for i, line in enumerate(lines):
-                if line.startswith('hostname='):
-                    lines[i] = 'hostname="%s"' % name
-                    break
-
-            with open(self.HOSTNAME_FILE, 'w') as f:
-                f.write('\n'.join(lines) + '\n')
+            f = open(self.HOSTNAME_FILE, 'w+')
+            try:
+                f.write("%s\n" % name)
+            finally:
+                f.close()
         except Exception, err:
             self.module.fail_json(msg="failed to update hostname: %s" %
                 str(err))
@@ -329,17 +366,26 @@ class OpenRCStrategy(GenericStrategy):
 class FedoraHostname(Hostname):
     platform = 'Linux'
     distribution = 'Fedora'
-    strategy_class = FedoraStrategy
+    strategy_class = SystemdStrategy
+
+class SLESHostname(Hostname):
+    platform = 'Linux'
+    distribution = 'Suse linux enterprise server '
+    distribution_version = get_distribution_version()
+    if distribution_version and LooseVersion(distribution_version) >= LooseVersion("12"):
+        strategy_class = SystemdStrategy
+    else:
+        strategy_class = UnimplementedStrategy
 
 class OpenSUSEHostname(Hostname):
     platform = 'Linux'
     distribution = 'Opensuse '
-    strategy_class = FedoraStrategy
+    strategy_class = SystemdStrategy
 
 class ArchHostname(Hostname):
     platform = 'Linux'
     distribution = 'Arch'
-    strategy_class = FedoraStrategy
+    strategy_class = SystemdStrategy
 
 class RedHat5Hostname(Hostname):
     platform = 'Linux'
@@ -349,48 +395,56 @@ class RedHat5Hostname(Hostname):
 class RedHatServerHostname(Hostname):
     platform = 'Linux'
     distribution = 'Red hat enterprise linux server'
-    distribution_version = _get_distribution_version()
+    distribution_version = get_distribution_version()
     if distribution_version and LooseVersion(distribution_version) >= LooseVersion("7"):
-        strategy_class = FedoraStrategy
+        strategy_class = SystemdStrategy
     else:
         strategy_class = RedHatStrategy
 
 class RedHatWorkstationHostname(Hostname):
     platform = 'Linux'
     distribution = 'Red hat enterprise linux workstation'
-    distribution_version = _get_distribution_version()
+    distribution_version = get_distribution_version()
     if distribution_version and LooseVersion(distribution_version) >= LooseVersion("7"):
-        strategy_class = FedoraStrategy
+        strategy_class = SystemdStrategy
     else:
         strategy_class = RedHatStrategy
 
 class CentOSHostname(Hostname):
     platform = 'Linux'
     distribution = 'Centos'
-    distribution_version = _get_distribution_version()
+    distribution_version = get_distribution_version()
     if distribution_version and LooseVersion(distribution_version) >= LooseVersion("7"):
-        strategy_class = FedoraStrategy
+        strategy_class = SystemdStrategy
     else:
         strategy_class = RedHatStrategy
 
 class CentOSLinuxHostname(Hostname):
     platform = 'Linux'
     distribution = 'Centos linux'
-    distribution_version = _get_distribution_version()
+    distribution_version = get_distribution_version()
     if distribution_version and LooseVersion(distribution_version) >= LooseVersion("7"):
-        strategy_class = FedoraStrategy
+        strategy_class = SystemdStrategy
     else:
         strategy_class = RedHatStrategy
 
 class ScientificHostname(Hostname):
     platform = 'Linux'
     distribution = 'Scientific'
-    strategy_class = RedHatStrategy
+    distribution_version = get_distribution_version()
+    if distribution_version and LooseVersion(distribution_version) >= LooseVersion("7"):
+        strategy_class = SystemdStrategy
+    else:
+        strategy_class = RedHatStrategy
 
 class ScientificLinuxHostname(Hostname):
     platform = 'Linux'
     distribution = 'Scientific linux'
-    strategy_class = RedHatStrategy
+    distribution_version = get_distribution_version()
+    if distribution_version and LooseVersion(distribution_version) >= LooseVersion("7"):
+        strategy_class = SystemdStrategy
+    else:
+        strategy_class = RedHatStrategy
 
 class AmazonLinuxHostname(Hostname):
     platform = 'Linux'
@@ -407,6 +461,11 @@ class UbuntuHostname(Hostname):
     distribution = 'Ubuntu'
     strategy_class = DebianStrategy
 
+class LinuxmintHostname(Hostname):
+    platform = 'Linux'
+    distribution = 'Linuxmint'
+    strategy_class = DebianStrategy
+
 class LinaroHostname(Hostname):
     platform = 'Linux'
     distribution = 'Linaro'
@@ -416,6 +475,16 @@ class GentooHostname(Hostname):
     platform = 'Linux'
     distribution = 'Gentoo base system'
     strategy_class = OpenRCStrategy
+
+class ALTLinuxHostname(Hostname):
+    platform = 'Linux'
+    distribution = 'Altlinux'
+    strategy_class = RedHatStrategy
+
+class OpenBSDHostname(Hostname):
+    platform = 'OpenBSD'
+    distribution = None
+    strategy_class = OpenBSDStrategy
 
 # ===========================================
 

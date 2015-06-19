@@ -71,9 +71,10 @@ options:
   backup:
     description:
       - If set, create a backup of the crontab before it is modified.
-        The location of the backup is returned in the C(backup) variable by this module.
+        The location of the backup is returned in the C(backup_file) variable by this module.
     required: false
-    default: false
+    choices: [ "yes", "no" ]
+    default: no
   minute:
     description:
       - Minute when the job should run ( 0-59, *, */2, etc )
@@ -117,14 +118,14 @@ options:
     choices: [ "reboot", "yearly", "annually", "monthly", "weekly", "daily", "hourly" ]
 requirements:
   - cron
-author: Dane Summers
+author: "Dane Summers (@dsummersl)"
 updates: [ 'Mike Grozak', 'Patrick Callahan' ]
 """
 
 EXAMPLES = '''
 # Ensure a job that runs at 2 and 5 exists.
-# Creates an entry like "* 5,2 * * ls -alh > /dev/null"
-- cron: name="check dirs" hour="5,2" job="ls -alh > /dev/null"
+# Creates an entry like "0 5,2 * * ls -alh > /dev/null"
+- cron: name="check dirs" minute="0" hour="5,2" job="ls -alh > /dev/null"
 
 # Ensure an old job is no longer present. Removes any job that is prefixed
 # by "#Ansible: an old job" from the crontab
@@ -139,7 +140,7 @@ EXAMPLES = '''
         cron_file=ansible_yum-autoupdate
 
 # Removes a cron file from under /etc/cron.d
-- cron: cron_file=ansible_yum-autoupdate state=absent
+- cron: name="yum autoupdate" cron_file=ansible_yum-autoupdate state=absent
 '''
 
 import os

@@ -27,7 +27,7 @@ module: copy
 version_added: "historical"
 short_description: Copies files to remote locations.
 description:
-     - The M(copy) module copies a file on the local box to remote locations.
+     - The M(copy) module copies a file on the local box to remote locations. Use the M(fetch) module to copy files from remote locations to the local box.
 options:
   src:
     description:
@@ -43,6 +43,7 @@ options:
     version_added: "1.1"
     description:
       - When used instead of 'src', sets the contents of a file directly to the specified value.
+        This is for simple values, for anything complex or with formatting please switch to the template module.
     required: false
     default: null
   dest:
@@ -85,7 +86,9 @@ options:
     required: false
     version_added: "1.5"
 extends_documentation_fragment: files
-author: Michael DeHaan
+author: 
+    - "Ansible Core Team"
+    - "Michael DeHaan"
 notes:
    - The "copy" module recursively copy facility does not scale to lots (>hundreds) of files.
      For alternative, see synchronize module, which is a wrapper around rsync.
@@ -108,6 +111,68 @@ EXAMPLES = '''
 - copy: src=/mine/sudoers dest=/etc/sudoers validate='visudo -cf %s'
 '''
 
+RETURN = '''
+dest:
+    description: destination file/path
+    returned: success
+    type: string
+    sample: "/path/to/file.txt"
+src:
+    description: source file used for the copy on the target machine
+    returned: changed
+    type: string
+    sample: "/home/httpd/.ansible/tmp/ansible-tmp-1423796390.97-147729857856000/source"
+md5sum:
+    description: md5 checksum of the file after running copy
+    returned: when supported
+    type: string
+    sample: "2a5aeecc61dc98c4d780b14b330e3282"
+checksum:
+    description: checksum of the file after running copy
+    returned: success
+    type: string
+    sample: "6e642bb8dd5c2e027bf21dd923337cbb4214f827"
+backup_file:
+    description: name of backup file created
+    returned: changed and if backup=yes
+    type: string
+    sample: "/path/to/file.txt.2015-02-12@22:09~"
+gid:
+    description: group id of the file, after execution
+    returned: success
+    type: int
+    sample: 100
+group:
+    description: group of the file, after execution
+    returned: success
+    type: string
+    sample: "httpd"
+owner:
+    description: owner of the file, after execution
+    returned: success
+    type: string
+    sample: "httpd"
+uid:
+    description: owner id of the file, after execution
+    returned: success
+    type: int
+    sample: 100
+mode:
+    description: permissions of the target, after execution
+    returned: success
+    type: string
+    sample: "0644"
+size:
+    description: size of the target, after execution
+    returned: success
+    type: int
+    sample: 1220
+state:
+    description: permissions of the target, after execution
+    returned: success
+    type: string
+    sample: "file"
+'''
 
 def split_pre_existing_dir(dirname):
     '''
@@ -167,16 +232,21 @@ def main():
     if not os.access(src, os.R_OK):
         module.fail_json(msg="Source %s not readable" % (src))
 
-    md5sum_src = module.md5(src)
-    md5sum_dest = None
+    checksum_src = module.sha1(src)
+    checksum_dest = None
+    # Backwards compat only.  This will be None in FIPS mode
+    try:
+        md5sum_src = module.md5(src)
+    except ValueError:
+        md5sum_src = None
 
     changed = False
 
     # Special handling for recursive copy - create intermediate dirs
-    if original_basename and dest.endswith("/"):
+    if original_basename and dest.endswith(os.sep):
         dest = os.path.join(dest, original_basename)
         dirname = os.path.dirname(dest)
-        if not os.path.exists(dirname):
+        if not os.path.exists(dirname) and os.path.isabs(dirname):
             (pre_existing_dir, new_directory_list) = split_pre_existing_dir(dirname)
             os.makedirs(dirname)
             directory_args = module.load_file_common_arguments(module.params)
@@ -198,7 +268,7 @@ def main():
                 basename = original_basename
             dest = os.path.join(dest, basename)
         if os.access(dest, os.R_OK):
-            md5sum_dest = module.md5(dest)
+            checksum_dest = module.sha1(dest)
     else:
         if not os.path.exists(os.path.dirname(dest)):
             try:
@@ -215,7 +285,7 @@ def main():
         module.fail_json(msg="Destination %s not writable" % (os.path.dirname(dest)))
 
     backup_file = None
-    if md5sum_src != md5sum_dest or os.path.islink(dest):
+    if checksum_src != checksum_dest or os.path.islink(dest):
         try:
             if backup:
                 if os.path.exists(dest):
@@ -238,7 +308,7 @@ def main():
         changed = False
 
     res_args = dict(
-        dest = dest, src = src, md5sum = md5sum_src, changed = changed
+        dest = dest, src = src, md5sum = md5sum_src, checksum = checksum_src, changed = changed
     )
     if backup_file:
         res_args['backup_file'] = backup_file

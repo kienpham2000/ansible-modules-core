@@ -39,7 +39,7 @@ options:
     version_added: "1.5"
   mode:
     description:
-      - Specify the direction of the synchroniztion. In push mode the localhost or delegate is the source; In pull mode the remote host in context is the source.
+      - Specify the direction of the synchronization. In push mode the localhost or delegate is the source; In pull mode the remote host in context is the source.
     required: false
     choices: [ 'push', 'pull' ]
     default: 'push'
@@ -138,6 +138,14 @@ options:
       - put user@ for the remote paths. If you have a custom ssh config to define the remote user for a host
         that does not match the inventory user, you should set this parameter to "no".
     default: yes
+  use_ssh_args:
+    description:
+      - Use the ssh_args specified in ansible.cfg
+    default: "yes"
+    choices:
+      - "yes"
+      - "no"
+    version_added: "2.0"
   rsync_opts:
     description:
       - Specify additional rsync options by passing in an array.
@@ -145,16 +153,17 @@ options:
     required: false
     version_added: "1.6"
 notes:
+   - rsync must be installed on both the local and remote machine.
    - Inspect the verbose output to validate the destination user/host/path
      are what was expected.
    - The remote user for the dest path will always be the remote_user, not
-     the sudo_user. 
+     the sudo_user.
    - Expect that dest=~/x will be ~<remote_user>/x even if using sudo.
    - To exclude files and directories from being synchronized, you may add 
      C(.rsync-filter) files to the source directory.
-     
-     
-author: Timothy Appnel
+
+
+author: "Timothy Appnel (@tima)"
 '''
 
 EXAMPLES = '''
@@ -180,7 +189,9 @@ local_action: synchronize src=some/relative/path dest=/some/absolute/path
 pull mode
 synchronize: mode=pull src=some/relative/path dest=/some/absolute/path
 
-# Synchronization of src on delegate host to dest on the current inventory host
+# Synchronization of src on delegate host to dest on the current inventory host.
+# If delegate_to is set to the current inventory host, this can be used to syncronize
+# two directories on that host. 
 synchronize: >
     src=some/relative/path dest=/some/absolute/path
     delegate_to: delegate.host
@@ -224,7 +235,8 @@ def main():
             group = dict(type='bool'),
             set_remote_user = dict(default='yes', type='bool'),
             rsync_timeout = dict(type='int', default=0),
-            rsync_opts = dict(type='list')
+            rsync_opts = dict(type='list'),
+            ssh_args = dict(type='str'),
         ),
         supports_check_mode = True
     )
@@ -251,8 +263,9 @@ def main():
     owner = module.params['owner']
     group = module.params['group']
     rsync_opts = module.params['rsync_opts']
+    ssh_args = module.params['ssh_args']
 
-    cmd = '%s --delay-updates -FF' % rsync
+    cmd = '%s --delay-updates -F' % rsync
     if compress:
         cmd = cmd + ' --compress'
     if rsync_timeout:
@@ -303,7 +316,11 @@ def main():
     else:
         private_key = '-i '+ private_key 
 
-    ssh_opts = '-S none -o StrictHostKeyChecking=no'
+    if ssh_args:
+      ssh_opts = '-S none -o StrictHostKeyChecking=no %s' % ssh_args
+    else:
+      ssh_opts = '-S none -o StrictHostKeyChecking=no'
+
     if dest_port != 22:
         cmd += " --rsh 'ssh %s %s -o Port=%s'" % (private_key, ssh_opts, dest_port)
     else:
